@@ -10,10 +10,34 @@ on:
       - master
       - develop
 
+
+env:
+  ENVIRONMENT_NAME: production
+  CI_REGISTRY_IMAGE: ${{ vars.AWS_ECR_LINK }}/adi/nitro
+  TAG_IMAGE: prod
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Create ECR repositories
+        run: |
+          aws ecr describe-repositories --region ${{ vars.AWS_REGION }} --repository-names adi/nitro || aws ecr create-repository --region ${{ vars.AWS_REGION }} --repository-name adi/nitro
+          
   docker:
     name: Docker build
     runs-on: ubuntu-8
+    needs: prepare
     services:
       # local registery
       registry:
@@ -26,11 +50,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+      
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+    
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: network=host
+      
+      - name: Login to AWS ECR and configure envs
+        run: |
+          aws ecr get-login-password --region ${{ vars.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.CI_REGISTRY_IMAGE }}
 
       - name: Cache Docker layers
         uses: actions/cache@v3
@@ -40,17 +76,17 @@ jobs:
           restore-keys: ${{ runner.os }}-buildx-
 
       - name: Build nitro-node docker
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           target: nitro-node
           push: true
           context: .
-          tags: localhost:5000/nitro-node:latest
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+          tags: ${{ env.CI_REGISTRY_IMAGE }}:${{ env.TAG_IMAGE }}
+          cache-from: type=registry,ref=${{ env.CI_REGISTRY_IMAGE }}:cache-prod
+          cache-to: type=registry,ref=${{ env.CI_REGISTRY_IMAGE }}:cache-prod,mode=max,image-manifest=true
 
       - name: Build nitro-node-dev docker
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           target: nitro-node-dev
           push: true
